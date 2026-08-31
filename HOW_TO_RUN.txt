@@ -1,0 +1,109 @@
+HOW TO RUN
+==========
+Run everything from the project root: /Applications/Developer/ml-api-project
+
+
+START THE SERVER
+----------------
+source venv/bin/activate
+uvicorn app.main:app --reload
+
+Then open:  http://127.0.0.1:8000/docs
+
+Stop with Ctrl+C
+
+On startup you should see a line like:
+  ... | INFO | app.ml_model | event=model_loaded path=... version=sha256:...
+That line appears ONCE per server start. If you ever see it on every
+request, the model is being loaded in the wrong place.
+
+
+TEST IT
+-------
+curl http://127.0.0.1:8000/
+curl http://127.0.0.1:8000/health
+
+# a real prediction (setosa)
+curl -X POST http://127.0.0.1:8000/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+
+# versicolor
+curl -X POST http://127.0.0.1:8000/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"sepal_length":6.0,"sepal_width":2.7,"petal_length":5.1,"petal_width":1.6}'
+
+# virginica
+curl -X POST http://127.0.0.1:8000/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"sepal_length":7.7,"sepal_width":3.0,"petal_length":6.1,"petal_width":2.3}'
+
+
+TEST THE VALIDATION (each should return 422, not a crash)
+---------------------------------------------------------
+# missing a field
+curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4}'
+
+# wrong type
+curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+  -d '{"sepal_length":"long","sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+
+# negative number
+curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+  -d '{"sepal_length":-5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+
+# unknown extra field
+curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2,"colour":"blue"}'
+
+# petal_width larger than petal_length (values likely swapped)
+curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":0.2,"petal_width":1.4}'
+
+
+READ THE LOGS
+-------------
+tail -f logs/api.log
+
+Every response carries an X-Request-ID header. To see everything that
+happened during one request:
+  grep "<that-id>" logs/api.log
+
+Logs rotate at 1 MB, keeping 5 old files (api.log.1 ... api.log.5).
+
+
+SEE THE DEGRADED-MODE BEHAVIOUR (optional)
+------------------------------------------
+Point the app at a model file that doesn't exist:
+  MODEL_PATH=/tmp/nope.joblib uvicorn app.main:app
+
+The server still starts, /health returns 503 with model_loaded=false,
+and /predict returns 503 instead of crashing.
+
+
+RETRAIN THE MODEL (optional)
+----------------------------
+source venv/bin/activate
+python ml/train.py
+python ml/verify_load.py
+
+Retraining changes the file, so model_version in the API response
+changes too (it is a hash of model.joblib).
+
+
+SETUP (only if venv/ is missing)
+--------------------------------
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+
+IF SOMETHING BREAKS
+-------------------
+uvicorn: command not found     ->  source venv/bin/activate
+No module named 'app'          ->  cd to project root
+Address already in use         ->  lsof -ti:8000 | xargs kill
+/health returns 503            ->  model.joblib missing; run python ml/train.py
+bad interpreter: .../venv/...  ->  the venv was built at a different path;
+                                   rebuild it (see SETUP above)
