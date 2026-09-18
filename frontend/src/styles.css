@@ -1,0 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import 'tailwindcss';
+
+:root { font-family: 'DM Sans', sans-serif; color: #e8edf5; background: #090d16; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: #090d16; }
+button, input, select { font: inherit; }
+button { cursor: pointer; }
+.mono { font-family: 'DM Mono', monospace; }
+.display { font-family: 'Space Grotesk', sans-serif; }
+.app-bg { min-height: 100vh; background: radial-gradient(circle at 20% -10%, rgba(76, 108, 184, .16), transparent 32rem), radial-gradient(circle at 100% 40%, rgba(33, 190, 159, .08), transparent 28rem), #090d16; }
+.card { border: 1px solid rgba(145, 162, 188, .15); border-radius: 14px; background: rgba(19, 26, 40, .76); box-shadow: 0 18px 50px rgba(0,0,0,.14); }
+.grid-noise { background-image: linear-gradient(rgba(139, 162, 194, .04) 1px, transparent 1px), linear-gradient(90deg, rgba(139, 162, 194, .04) 1px, transparent 1px); background-size: 32px 32px; }
+.input { width: 100%; border: 1px solid rgba(145, 162, 188, .18); border-radius: 9px; background: rgba(9, 13, 22, .72); color: #f3f6fa; outline: none; transition: .2s; }
+.input:focus { border-color: #39c9a6; box-shadow: 0 0 0 3px rgba(57, 201, 166, .12); }
+.glow { box-shadow: 0 0 0 4px rgba(57, 201, 166, .12), 0 0 25px rgba(57, 201, 166, .13); }
+.app-bg.light { color: #1b2a3b; background: radial-gradient(circle at 20% -10%, rgba(117, 164, 220, .18), transparent 32rem), #f3f6fa; }
+.light .card { border-color: #dce3ec; background: rgba(255, 255, 255, .84); box-shadow: 0 18px 50px rgba(42, 65, 96, .08); }
+.light header, .light aside { border-color: #dce3ec; background: rgba(250, 252, 255, .92); }
+.light .text-white, .light .text-slate-100, .light .text-slate-200, .light .text-slate-300 { color: #203149; }
+.light .text-slate-400 { color: #52647b; }
+.light .text-slate-500 { color: #718198; }
+.light .border-white\/10 { border-color: #dce3ec; }
+.light .bg-white\/5, .light .bg-white\/\[\.03\] { background: rgba(30, 58, 91, .04); }
+.light .input { border-color: #dce3ec; background: #f8fafc; color: #203149; }
+@media (max-width: 720px) { .hide-mobile { display: none; } }
