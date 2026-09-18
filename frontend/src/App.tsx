@@ -5,6 +5,7 @@ import { motion } from 'framer-motion'
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { Activity, AlertTriangle, ArrowRight, BarChart3, Check, ChevronDown, CircleDot, Clock3, Code2, Cpu, Database, GitBranch, LayoutDashboard, Menu, Moon, Network, Play, Settings2, ShieldCheck, Sun, X } from 'lucide-react'
 import { backendUrl, docsUrl, getHealth, getMetrics, getModelInfo, metricsSummary, predict } from './api'
+import DocsPage from './DocsPage'
 import type { Health, ModelInfo, Prediction, PredictionInput } from './types'
 
 const chartData = [{ name: '10:00', latency: 130 }, { name: '10:05', latency: 118 }, { name: '10:10', latency: 106 }, { name: '10:15', latency: 112 }, { name: '10:20', latency: 91 }, { name: '10:25', latency: 82 }, { name: '10:30', latency: 74 }]
@@ -14,6 +15,7 @@ export default function App() {
   const [dark, setDark] = useState(true)
   const [mobileOpen, setMobileOpen] = useState(false)
   const location = useLocation()
+  if (location.pathname === '/docs') return <div className={dark ? 'app-bg' : 'app-bg light'}><div className="min-h-screen md:pl-64"><header className="flex h-16 items-center border-b border-white/10 px-5 sm:px-8"><Link to="/" className="text-sm text-slate-400 hover:text-white">← Back to dashboard</Link></header><main className="mx-auto max-w-[1450px] p-5 sm:p-8"><DocsPage /></main></div></div>
   return <div className={dark ? 'app-bg' : 'app-bg light'}>
     <aside className={`fixed z-30 flex h-screen w-64 flex-col border-r border-white/10 bg-[#0d1320]/95 p-5 backdrop-blur-xl transition-transform max-md:w-72 ${mobileOpen ? 'translate-x-0' : 'max-md:-translate-x-full'}`}>
       <Link to="/" className="mb-10 flex items-center gap-3 px-2" onClick={() => setMobileOpen(false)}><span className="grid h-9 w-9 place-items-center rounded-xl bg-[#39c9a6] text-[#07131a]"><Cpu size={19} /></span><span className="display text-lg font-bold tracking-tight">vector<span className="text-[#39c9a6]">.ai</span></span></Link>

@@ -22,6 +22,16 @@ MIN_CM = 0
 MAX_CM = 30
 
 
+# ==========================================================================
+# V1 SCHEMAS — frozen contract
+#
+# Nothing in this section may change in a breaking way. Renaming a field,
+# removing one, or tightening a constraint here would break every client
+# already calling /api/v1. Additive, optional fields are the only safe
+# edit. Breaking changes go in the V2 section at the bottom instead.
+# ==========================================================================
+
+
 class PredictionInput(BaseModel):
     """The four measurements the model was trained on."""
 
@@ -117,3 +127,109 @@ class ErrorResponse(BaseModel):
 
     detail: object = Field(..., description="Safe, human-readable description of what went wrong")
     request_id: str = Field(..., description="Quote this when reporting a problem")
+
+
+class PredictionBatchInput(BaseModel):
+    """Many rows in one request.
+
+    The upper bound is NOT declared here as `max_length`, because the
+    limit is configurable (MAX_BATCH_SIZE) and a schema constant would
+    freeze it at import time. The endpoint enforces it from settings and
+    returns 413 instead — see app/routers/v1.py.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "items": [
+                        {
+                            "sepal_length": 5.1,
+                            "sepal_width": 3.5,
+                            "petal_length": 1.4,
+                            "petal_width": 0.2,
+                        },
+                        {
+                            "sepal_length": 6.0,
+                            "sepal_width": 2.7,
+                            "petal_length": 5.1,
+                            "petal_width": 1.6,
+                        },
+                    ]
+                }
+            ]
+        },
+    )
+
+    items: list[PredictionInput] = Field(
+        ..., min_length=1, description="One or more sets of measurements to score"
+    )
+
+
+class PredictionBatchOutput(BaseModel):
+    """Results in the same order as the inputs that produced them."""
+
+    predictions: list[PredictionOutput] = Field(
+        ..., description="One result per input item, in the order submitted"
+    )
+    count: int = Field(..., description="How many rows were scored")
+    request_id: str = Field(..., description="Correlates this response with the server logs")
+
+
+class ModelInfoResponse(BaseModel):
+    """What model is currently serving traffic.
+
+    Every value here is read from the bundle that train.py saved, not
+    written by hand — a hardcoded 'version: 1.0' would go stale the first
+    time anyone retrained and would then actively mislead.
+    """
+
+    model_version: str = Field(..., description="Fingerprint of the loaded artifact")
+    model_type: str = Field(..., description="Estimator class name, e.g. RandomForestClassifier")
+    trained_at: str | None = Field(None, description="UTC timestamp of training")
+    features: list[str] = Field(..., description="Feature names, in the order the model expects")
+    classes: list[str] = Field(..., description="Class labels the model can output")
+    sklearn_version: str | None = Field(None, description="scikit-learn version used to train")
+    test_accuracy: float | None = Field(None, description="Hold-out accuracy at training time")
+    n_training_samples: int | None = Field(None, description="Rows used to fit the model")
+
+
+# ==========================================================================
+# V2 SCHEMAS — the breaking change
+#
+# What makes v2 necessary rather than an edit to v1:
+#   * `confidence` is RENAMED to `probability`      -> removal for v1 clients
+#   * `probabilities` (dict) becomes `ranked` (list) -> shape change
+#   * `trained_at` is ADDED                          -> additive, safe alone
+#
+# Only the first two force a new version. An additive optional field could
+# have shipped in v1 without breaking anyone; a rename cannot, because a
+# client doing response["confidence"] raises KeyError the moment it lands.
+#
+# What is deliberately NOT duplicated: PredictionInput is shared, because
+# the *request* contract did not change, and the inference itself lives in
+# IrisModel. Only the response assembly differs between versions.
+# ==========================================================================
+
+
+class ClassProbability(BaseModel):
+    """One class and the probability assigned to it."""
+
+    species: str = Field(..., description="Class label")
+    probability: float = Field(..., ge=0, le=1, description="Probability for this class")
+
+
+class PredictionOutputV2(BaseModel):
+    """v2 response. Compare field-by-field with PredictionOutput above."""
+
+    prediction: str = Field(..., description="Predicted species name")
+    probability: float = Field(
+        ..., ge=0, le=1, description="Probability of the predicted class (v1 called this 'confidence')"
+    )
+    ranked: list[ClassProbability] = Field(
+        ..., description="All classes, most likely first (v1 sent an unordered dict)"
+    )
+    model_version: str = Field(..., description="Identifies the exact model artifact used")
+    trained_at: str | None = Field(None, description="When the serving model was trained (new in v2)")
+    request_id: str = Field(..., description="Correlates this response with the server logs")

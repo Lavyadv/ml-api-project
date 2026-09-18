@@ -19,10 +19,13 @@ from __future__ import annotations
 import logging
 import logging.handlers
 from contextvars import ContextVar
-from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOG_DIR = PROJECT_ROOT / "logs"
+from app.config import settings
+
+# Log destination and rotation limits come from configuration, so a
+# container can log somewhere else (or keep more history) without a code
+# change. See app/config.py and .env.example.
+LOG_DIR = settings.log_dir
 LOG_FILE = LOG_DIR / "api.log"
 
 # Name of the logger every module in this package hangs off of. Modules
@@ -33,8 +36,8 @@ APP_LOGGER_NAME = "app"
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | request_id=%(request_id)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 
-MAX_BYTES = 1_000_000  # rotate at ~1 MB
-BACKUP_COUNT = 5       # keep api.log.1 ... api.log.5
+MAX_BYTES = settings.log_max_bytes      # rotate at this size
+BACKUP_COUNT = settings.log_backup_count  # keep api.log.1 ... api.log.N
 
 # Default "-" means: a log line emitted outside of any request (startup,
 # shutdown) still formats cleanly instead of blowing up on a missing field.
@@ -71,12 +74,16 @@ def kv(**fields: object) -> str:
     return " ".join(parts)
 
 
-def configure_logging(level: int = logging.INFO) -> logging.Logger:
-    """Configure the `app` logger. Safe to call more than once."""
+def configure_logging(level: int | str | None = None) -> logging.Logger:
+    """Configure the `app` logger. Safe to call more than once.
+
+    Defaults to LOG_LEVEL from settings; the argument is an override for
+    tests that need to turn the noise down or up.
+    """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     logger = logging.getLogger(APP_LOGGER_NAME)
-    logger.setLevel(level)
+    logger.setLevel(level if level is not None else settings.log_level)
 
     # Re-running (uvicorn --reload) must not stack up duplicate handlers.
     for handler in list(logger.handlers):

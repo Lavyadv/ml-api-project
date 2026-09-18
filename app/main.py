@@ -1,17 +1,27 @@
-"""FastAPI application: routes, startup, logging middleware, error handling.
+"""FastAPI application wiring.
+
+This file deliberately defines no business routes. Its job is to build
+the app and attach the cross-cutting concerns that every version shares:
+
+    * lifespan        — load the model once, at startup
+    * middleware      — request ids, timing, access logging
+    * exception       — turn failures into documented JSON, never tracebacks
+      handlers
+    * include_router  — mount each API version
+
+Routes live in app/routers/. Adding /api/v3 later means adding one file
+and one include_router() line; nothing in here needs rewriting. That is
+what "adding a version won't require rewriting existing code" buys you.
 
 Request lifecycle, end to end:
 
     request
       -> log_requests middleware   (assign request_id, start the clock)
       -> FastAPI + Pydantic        (parse & validate body -> 422 if bad)
-      -> endpoint function         (shape array, call model)
+      -> router endpoint           (shape array, call model)
       -> response_model            (filter & shape the outgoing JSON)
       -> log_requests middleware   (log method, path, status, duration)
     response
-
-Anything raised along the way lands in one of the exception handlers
-below, which turn it into a documented JSON body — never a traceback.
 """
 from __future__ import annotations
 
@@ -20,30 +30,27 @@ import time
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.config import settings
 from app.logging_config import configure_logging, kv, request_id_var
 from app.ml_model import InferenceError, IrisModel, ModelNotLoadedError
-from app.models.schemas import (
-    ErrorResponse,
-    HealthResponse,
-    PredictionInput,
-    PredictionOutput,
-)
+from app.routers import v1, v2
 
 logger = logging.getLogger(__name__)
-
-API_VERSION = "1.0.0"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Run once when the server boots, and once when it shuts down.
 
-    Loading the model here — rather than inside the endpoint — means the
+    Loading the model here — rather than inside an endpoint — means the
     joblib file is read from disk exactly once for the life of the
     process. Loading it per request would re-read and re-deserialize the
     whole model on every call, turning a millisecond of inference into
@@ -52,9 +59,9 @@ async def lifespan(app: FastAPI):
     Everything before `yield` is startup; everything after is shutdown.
     """
     configure_logging()
-    logger.info(kv(event="startup_begin", api_version=API_VERSION))
+    logger.info(kv(event="startup_begin", api_version=settings.api_version))
 
-    model = IrisModel()
+    model = IrisModel(settings.model_path)
     try:
         model.load()
     except Exception as exc:
@@ -62,16 +69,16 @@ async def lifespan(app: FastAPI):
         # than refusing to boot. That keeps /health reachable so a
         # monitor can *report* "up but cannot predict" instead of just
         # seeing a dead port. The cost is that the failure is quieter —
-        # so it is logged at ERROR, /health answers 503, and /predict
-        # answers 503 rather than pretending.
+        # so it is logged at ERROR, and both /health and /predict answer
+        # 503 rather than pretending.
         logger.error(
             kv(event="model_load_failed", path=str(model.model_path), error=str(exc)),
             exc_info=True,
         )
 
     # app.state is FastAPI's designated place for objects shared across
-    # requests. Endpoints reach it via request.app.state, so nothing has
-    # to reach for a module-level global that tests can't substitute.
+    # requests. The get_model dependency reads it, so no route reaches
+    # for a module-level global that tests can't substitute.
     app.state.model = model
 
     logger.info(kv(event="startup_complete", model_loaded=model.is_loaded))
@@ -82,10 +89,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Iris Classifier API",
-    description="Serves a scikit-learn Iris species classifier over HTTP.",
-    version=API_VERSION,
+    title=settings.api_title,
+    description=settings.api_description,
+    version=settings.api_version,
     lifespan=lifespan,
+)
+
+# This adds scrapeable HTTP request counters and latency histograms at the
+# public /metrics endpoint. It intentionally sits outside the API-key-protected
+# versioned routers: Prometheus scrapes it with network-level access control.
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
+
+# Browser clients are restricted to explicitly configured origins.  The
+# default is deliberately deny-by-default, rather than a permissive "*".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key", "X-Request-ID"],
 )
 
 
@@ -97,8 +119,8 @@ async def log_requests(request: Request, call_next):
     """Log every request, and give each one a traceable id.
 
     The id is stored in two places on purpose:
-      * request.state.request_id — so the endpoint can read it and put it
-        in the response body;
+      * request.state.request_id — so endpoints can read it (via the
+        get_request_id dependency) and put it in the response body;
       * the request_id ContextVar — so *any* log line emitted while this
         request is being handled is stamped with it automatically.
     """
@@ -189,11 +211,34 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
         kv(event="validation_failed", path=request.url.path, errors=len(exc.errors()))
     )
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content={
             "detail": jsonable_encoder(exc.errors()),
             "request_id": _request_id_of(request),
         },
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """Give deliberately-raised HTTPExceptions the same body shape as everything else.
+
+    FastAPI's built-in handler returns {"detail": ...} with no request_id,
+    which would make 413s and 404s the odd ones out. A client should never
+    have to branch on status code just to find the correlation id.
+    """
+    logger.warning(
+        kv(
+            event="http_exception",
+            path=request.url.path,
+            status=exc.status_code,
+            detail=str(exc.detail),
+        )
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "request_id": _request_id_of(request)},
+        headers=getattr(exc, "headers", None),
     )
 
 
@@ -213,92 +258,22 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 
 # --------------------------------------------------------------------------
-# Routes
+# Routers — one line per API version
 # --------------------------------------------------------------------------
-@app.get("/")
-def root() -> dict[str, str]:
-    return {"message": "ML API is alive", "docs": "/docs", "version": API_VERSION}
+app.include_router(v1.router)
+app.include_router(v2.router)
 
 
-@app.get("/health", response_model=HealthResponse, tags=["ops"])
-def health(request: Request, response: Response) -> HealthResponse:
-    """Cheap liveness/readiness check for monitoring.
+@app.get("/", tags=["ops"])
+def root() -> dict[str, object]:
+    """Unversioned entry point: says what versions exist and where docs are.
 
-    Deliberately does not touch the prediction path — a monitor hitting
-    this every few seconds must not burn CPU on inference. It also must
-    never crash: `getattr` with a default covers the case where startup
-    failed before app.state.model was ever assigned.
+    Kept off the version prefix on purpose — a client that doesn't yet
+    know which versions you serve has to be able to ask something.
     """
-    model = getattr(request.app.state, "model", None)
-    loaded = model is not None and model.is_loaded
-
-    # A monitor keys off the status code, not the body, so an unusable
-    # service must not answer 200.
-    if not loaded:
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-
-    return HealthResponse(
-        status="ok" if loaded else "degraded",
-        model_loaded=loaded,
-        model_version=model.version if loaded else None,
-    )
-
-
-@app.post(
-    "/predict",
-    response_model=PredictionOutput,
-    tags=["inference"],
-    summary="Predict the Iris species from four measurements",
-    responses={
-        422: {"model": ErrorResponse, "description": "Input failed validation"},
-        500: {"model": ErrorResponse, "description": "Prediction failed"},
-        503: {"model": ErrorResponse, "description": "Model not loaded"},
-    },
-)
-def predict(payload: PredictionInput, request: Request) -> PredictionOutput:
-    """Run the loaded model against one set of measurements.
-
-    Note what is *absent*: there is no joblib.load() here. The model was
-    loaded once at startup and is only looked up.
-
-    Defined with `def` rather than `async def` on purpose. Inference is
-    blocking CPU work; a plain `def` endpoint is run by FastAPI in a
-    threadpool, so a slow prediction doesn't stall the event loop and
-    freeze every other in-flight request.
-    """
-    request_id = _request_id_of(request)
-    model: IrisModel | None = getattr(request.app.state, "model", None)
-
-    if model is None or not model.is_loaded:
-        raise ModelNotLoadedError("Model is not loaded")
-
-    try:
-        result = model.predict(payload.model_dump())
-    except (ModelNotLoadedError, InferenceError):
-        # Both have dedicated handlers above that log and shape the
-        # response; re-raise rather than flattening them into a generic 500.
-        raise
-    except Exception as exc:
-        # Anything genuinely unforeseen: record the full detail server-side,
-        # send the client a sentence that reveals nothing about internals.
-        logger.exception(kv(event="prediction_failed", error=type(exc).__name__))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Prediction failed"
-        ) from exc
-
-    logger.info(
-        kv(
-            event="prediction_success",
-            prediction=result.label,
-            confidence=round(result.confidence, 4),
-            model_version=model.version,
-        )
-    )
-
-    return PredictionOutput(
-        prediction=result.label,
-        confidence=result.confidence,
-        probabilities=result.probabilities,
-        model_version=model.version or "unknown",
-        request_id=request_id,
-    )
+    return {
+        "message": "ML API is alive",
+        "docs": "/docs",
+        "app_version": settings.api_version,
+        "api_versions": ["/api/v1", "/api/v2"],
+    }

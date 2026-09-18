@@ -18,47 +18,91 @@ That line appears ONCE per server start. If you ever see it on every
 request, the model is being loaded in the wrong place.
 
 
+RUN THE TESTS
+-------------
+source venv/bin/activate
+pytest -v          # 36 tests, no server needed
+pytest -q          # quiet
+
+
 TEST IT
 -------
+Set API_KEY in .env first, then include it in every versioned API call:
+  -H 'X-API-Key: <your API_KEY>'
+
 curl http://127.0.0.1:8000/
-curl http://127.0.0.1:8000/health
+curl -H 'X-API-Key: <your API_KEY>' http://127.0.0.1:8000/api/v1/health
+curl -H 'X-API-Key: <your API_KEY>' http://127.0.0.1:8000/api/v1/model-info
 
 # a real prediction (setosa)
-curl -X POST http://127.0.0.1:8000/predict \
-  -H 'Content-Type: application/json' \
+curl -X POST http://127.0.0.1:8000/api/v1/predict \
+  -H 'Content-Type: application/json' -H 'X-API-Key: <your API_KEY>' \
   -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
 
 # versicolor
-curl -X POST http://127.0.0.1:8000/predict \
-  -H 'Content-Type: application/json' \
+curl -X POST http://127.0.0.1:8000/api/v1/predict \
+  -H 'Content-Type: application/json' -H 'X-API-Key: <your API_KEY>' \
   -d '{"sepal_length":6.0,"sepal_width":2.7,"petal_length":5.1,"petal_width":1.6}'
 
 # virginica
-curl -X POST http://127.0.0.1:8000/predict \
-  -H 'Content-Type: application/json' \
+curl -X POST http://127.0.0.1:8000/api/v1/predict \
+  -H 'Content-Type: application/json' -H 'X-API-Key: <your API_KEY>' \
   -d '{"sepal_length":7.7,"sepal_width":3.0,"petal_length":6.1,"petal_width":2.3}'
+
+
+BATCH AND V2
+------------
+# score several rows in one call
+curl -X POST http://127.0.0.1:8000/api/v1/predict-batch \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[
+        {"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2},
+        {"sepal_length":7.7,"sepal_width":3.0,"petal_length":6.1,"petal_width":2.3}]}'
+
+# v2: same input, different response shape (probability + ranked list)
+curl -X POST http://127.0.0.1:8000/api/v2/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+
+# over MAX_BATCH_SIZE -> 413
+python - <<'EOF' > /tmp/big.json
+import json
+row = {"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}
+print(json.dumps({"items":[row]*101}))
+EOF
+curl -X POST http://127.0.0.1:8000/api/v1/predict-batch \
+  -H 'Content-Type: application/json' -d @/tmp/big.json
+
+
+CHANGE CONFIGURATION
+--------------------
+Edit .env, or set environment variables (these win over .env):
+
+  MAX_BATCH_SIZE=25 LOG_LEVEL=DEBUG uvicorn app.main:app
+
+See .env.example for every available variable.
 
 
 TEST THE VALIDATION (each should return 422, not a crash)
 ---------------------------------------------------------
 # missing a field
-curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+curl -X POST http://127.0.0.1:8000/api/v1/predict -H 'Content-Type: application/json' \
   -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4}'
 
 # wrong type
-curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+curl -X POST http://127.0.0.1:8000/api/v1/predict -H 'Content-Type: application/json' \
   -d '{"sepal_length":"long","sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
 
 # negative number
-curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+curl -X POST http://127.0.0.1:8000/api/v1/predict -H 'Content-Type: application/json' \
   -d '{"sepal_length":-5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
 
 # unknown extra field
-curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+curl -X POST http://127.0.0.1:8000/api/v1/predict -H 'Content-Type: application/json' \
   -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2,"colour":"blue"}'
 
 # petal_width larger than petal_length (values likely swapped)
-curl -X POST http://127.0.0.1:8000/predict -H 'Content-Type: application/json' \
+curl -X POST http://127.0.0.1:8000/api/v1/predict -H 'Content-Type: application/json' \
   -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":0.2,"petal_width":1.4}'
 
 
@@ -78,8 +122,8 @@ SEE THE DEGRADED-MODE BEHAVIOUR (optional)
 Point the app at a model file that doesn't exist:
   MODEL_PATH=/tmp/nope.joblib uvicorn app.main:app
 
-The server still starts, /health returns 503 with model_loaded=false,
-and /predict returns 503 instead of crashing.
+The server still starts, /api/v1/health returns 503 with
+model_loaded=false, and /api/v1/predict returns 503 instead of crashing.
 
 
 RETRAIN THE MODEL (optional)
@@ -105,5 +149,8 @@ uvicorn: command not found     ->  source venv/bin/activate
 No module named 'app'          ->  cd to project root
 Address already in use         ->  lsof -ti:8000 | xargs kill
 /health returns 503            ->  model.joblib missing; run python ml/train.py
+404 on /predict                ->  routes are versioned now: /api/v1/predict
+413 on /predict-batch          ->  batch over MAX_BATCH_SIZE (see .env)
+pytest: No module named 'app'  ->  run pytest from the project root
 bad interpreter: .../venv/...  ->  the venv was built at a different path;
                                    rebuild it (see SETUP above)

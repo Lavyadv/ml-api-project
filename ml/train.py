@@ -8,8 +8,11 @@ Uses a scikit-learn Pipeline (scaler + model) so that the exact same
 preprocessing used at training time is automatically reapplied at
 prediction time — no separate scaler to track by hand.
 """
+from datetime import datetime, timezone
+
 import joblib
 import pandas as pd
+import sklearn
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
@@ -18,6 +21,7 @@ from sklearn.preprocessing import StandardScaler
 
 DATA_PATH = "data/iris.csv"
 MODEL_PATH = "ml/saved_model/model.joblib"
+PIPELINE_PATH = "ml/saved_model/iris_pipeline.pkl"
 
 # Order matters: the API must send features in this exact order at predict time.
 FEATURE_COLUMNS = ["sepal_length", "sepal_width", "petal_length", "petal_width"]
@@ -64,11 +68,34 @@ def main():
     print(f"Test accuracy: {acc:.4f}")
     print(classification_report(y_test, y_pred, target_names=target_names))
 
-    joblib.dump(
-        {"pipeline": pipeline, "target_names": list(target_names), "features": FEATURE_COLUMNS},
-        MODEL_PATH,
-    )
+    # Metadata is saved *with* the model so the API can report what it is
+    # serving without guessing. Anything the /model-info endpoint needs to
+    # tell a client must be recorded here, at training time — that is the
+    # only moment these facts are actually known.
+    metadata = {
+        "model_type": type(pipeline.named_steps["clf"]).__name__,
+        "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "sklearn_version": sklearn.__version__,
+        "n_training_samples": int(len(X_train)),
+        "n_test_samples": int(len(X_test)),
+        "test_accuracy": round(float(acc), 4),
+        "training_data": DATA_PATH,
+    }
+
+    bundle = {
+        "pipeline": pipeline,
+        "target_names": list(target_names),
+        "features": FEATURE_COLUMNS,
+        "metadata": metadata,
+    }
+    joblib.dump(bundle, MODEL_PATH)
+    # The .pkl is the portable hand-off artifact. It contains the fitted
+    # scaler and classifier together, so callers never have to reproduce
+    # preprocessing before predicting.
+    joblib.dump(bundle, PIPELINE_PATH)
     print(f"Model saved to {MODEL_PATH}")
+    print(f"Portable pipeline saved to {PIPELINE_PATH}")
+    print(f"Metadata: {metadata}")
 
 
 if __name__ == "__main__":
